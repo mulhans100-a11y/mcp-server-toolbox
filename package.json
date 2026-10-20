@@ -9,6 +9,8 @@
     "developer-tools",
     "typescript",
     "docker",
+    "git",
+    "conventional-commits",
     "logs",
     "json"
   ],

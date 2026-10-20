@@ -5,12 +5,14 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 A small, local [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that gives AI
-coding assistants a few practical developer tools: search local logs, inspect Docker containers, and
-clean up JSON payloads.
+coding assistants a few practical developer tools: search local logs, inspect Docker containers,
+clean up JSON payloads, and review and create Git commits.
 
 The server communicates over **stdio**, so Claude Desktop, Cursor, and other MCP clients launch it
-as a local process. The server itself makes no network requests or file writes. The Docker CLI
-follows the currently selected Docker context.
+as a local process. The server makes no application-level network requests. The Git tool can stage
+and commit repository changes when explicitly called with a commit message; Git hooks or signing
+programs configured on your machine may also run as part of that commit. The Docker CLI follows the
+currently selected Docker context.
 
 ## Contents
 
@@ -34,14 +36,18 @@ follows the currently selected Docker context.
 | `search_local_logs`        | Searches specified log files or directories using a JavaScript regular expression. Results include file names, line numbers, and matching snippets. |
 | `inspect_docker_container` | Lists local Docker containers and their state, status, image, ports, and creation time. Stopped containers are optional.                            |
 | `format_json_payload`      | Pretty-prints JSON, including JSON in Markdown fences or surrounded by prose. It removes trailing commas and reports what it cleaned up.            |
+| `git_auto_commit`          | Previews repository status and changes, then creates a commit from a Conventional Commit message. It returns the new commit ID.                     |
 
-Each tool publishes an input schema, an output schema, and read-only metadata. Tool responses
-include structured JSON for clients that support it, plus a readable text representation.
+Each tool publishes input and output schemas plus safety metadata. The first three tools are
+read-only; `git_auto_commit` is marked as a write operation. Tool responses include structured JSON
+for clients that support it, plus a readable text representation.
 
 ## Requirements
 
 - Node.js 20 or later
 - Docker Desktop or Docker Engine for `inspect_docker_container` (optional for the other tools)
+- Git for `git_auto_commit` (optional for the other tools); Git must be available on `PATH`
+- A configured Git commit identity (`user.name` and `user.email`) to create commits
 
 ## Install and build
 
@@ -117,7 +123,8 @@ Example for Windows (replace the paths with your own):
       "command": "C:\\Program Files\\nodejs\\node.exe",
       "args": ["C:\\path\\to\\local-developer-toolbox-mcp\\dist\\index.js"],
       "env": {
-        "TOOLBOX_LOG_DIRS": "C:\\path\\to\\your\\application\\logs"
+        "TOOLBOX_LOG_DIRS": "C:\\path\\to\\your\\application\\logs",
+        "TOOLBOX_GIT_REPOSITORY": "C:\\path\\to\\your\\repository"
       }
     }
   }
@@ -133,7 +140,8 @@ Example for macOS (replace the paths with your own):
       "command": "/opt/homebrew/bin/node",
       "args": ["/absolute/path/to/local-developer-toolbox-mcp/dist/index.js"],
       "env": {
-        "TOOLBOX_LOG_DIRS": "/absolute/path/to/application/logs"
+        "TOOLBOX_LOG_DIRS": "/absolute/path/to/application/logs",
+        "TOOLBOX_GIT_REPOSITORY": "/absolute/path/to/your/repository"
       }
     }
   }
@@ -163,7 +171,8 @@ available across projects. Build the server first, then add:
       "command": "node",
       "args": ["/absolute/path/to/local-developer-toolbox-mcp/dist/index.js"],
       "env": {
-        "TOOLBOX_LOG_DIRS": "/absolute/path/to/application/logs"
+        "TOOLBOX_LOG_DIRS": "/absolute/path/to/application/logs",
+        "TOOLBOX_GIT_REPOSITORY": "/absolute/path/to/your/repository"
       }
     }
   }
@@ -187,7 +196,8 @@ For the latest configuration options and file locations, see
       "command": "C:\\Program Files\\nodejs\\node.exe",
       "args": ["C:\\path\\to\\local-developer-toolbox-mcp\\dist\\index.js"],
       "env": {
-        "TOOLBOX_LOG_DIRS": "C:\\path\\to\\your\\application\\logs"
+        "TOOLBOX_LOG_DIRS": "C:\\path\\to\\your\\application\\logs",
+        "TOOLBOX_GIT_REPOSITORY": "C:\\path\\to\\your\\repository"
       }
     }
   }
@@ -234,14 +244,54 @@ The result includes `formattedJson`, `extractedFromSurroundingText`, and `remove
 The formatter does not guess missing braces, convert single quotes, or invent values; malformed JSON
 that cannot be safely cleaned returns an error.
 
+### `git_auto_commit`
+
+The tool uses two calls so the AI can inspect the changes before it generates a commit message. Set
+`TOOLBOX_GIT_REPOSITORY` in the MCP client configuration, or pass `repositoryPath` explicitly.
+
+First, request a preview without `commitMessage`:
+
+```json
+{
+  "repositoryPath": "C:/work/my-project"
+}
+```
+
+The response contains the current branch, `git status`, staged and unstaged diffs, and previews for
+small untracked regular files. The diff preview is capped at 40,000 characters; `diffTruncated`
+signals omitted content. If there are no changes, the tool returns
+`Keine Änderungen zum Committen vorhanden.`
+
+After reviewing the preview, provide a single-line Conventional Commit message:
+
+```json
+{
+  "repositoryPath": "C:/work/my-project",
+  "commitMessage": "feat: add git auto commit tool"
+}
+```
+
+The tool validates the message, runs `git add .` from the repository root, then runs
+`git commit -m`. The result includes the commit ID. If Git is missing, the path is not a repository,
+Git is not configured with a commit identity, or the commit fails for another reason, the tool
+returns a readable error instead of stopping the MCP server. If staging succeeds but the commit
+fails (for example, because a Git hook rejects it), the changes may remain staged for inspection.
+
 ## Security and privacy
 
 - This is a local stdio server. Its tools do not write files or make application-level network
-  requests. The Docker CLI follows the active Docker context, which may point to a remote engine.
+  requests. `git_auto_commit` writes to Git metadata and stages files when called with a commit
+  message. Git hooks or signing programs configured on the machine may also run. The Docker CLI
+  follows the active Docker context, which may point to a remote engine.
 - Log access is limited to configured roots. Keep those roots as narrow as practical; matching log
   lines are returned to the connected AI client and may contain sensitive data.
+- Git diff previews are returned to the connected AI client and can contain sensitive source or
+  configuration values. Review them before committing.
 - The Docker tool invokes only the read-only `docker ps` command. It does not run arbitrary shell
   commands or inspect container filesystems.
+- `git_auto_commit` stages every non-ignored change in the selected repository, including changes
+  that were already staged. Review the returned status and diff before calling it with a message. If
+  the commit fails after staging, inspect the index before trying again.
 - Review tool calls and outputs according to your AI client's normal approval controls.
 
 ## Reporting a vulnerability
@@ -273,6 +323,14 @@ repository's **Security** tab. See [SECURITY.md](SECURITY.md) for details.
 - Check that Docker is installed and the daemon is running.
 - Run `docker ps` in a terminal launched under the same user account.
 - The tool respects the active Docker context, including a remote context if one is selected.
+
+### Git commit fails
+
+- Confirm Git is installed and available on `PATH`.
+- Set `TOOLBOX_GIT_REPOSITORY` to the intended repository or pass `repositoryPath` to the tool.
+- Configure `git config user.name` and `git config user.email` for the account creating the commit.
+- Review the preview and use a single-line Conventional Commit message, such as
+  `fix: handle empty log files`.
 
 ## Development
 

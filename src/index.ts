@@ -3,6 +3,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import { inspectDockerContainers } from "./tools/docker.js";
 import { formatJsonPayload } from "./tools/format-json.js";
+import { gitAutoCommit } from "./tools/git-auto-commit.js";
 import { searchLocalLogs } from "./tools/search-logs.js";
 
 const logSearchOutputSchema = z.object({
@@ -47,6 +48,17 @@ const formatJsonOutputSchema = z.object({
   formattedJson: z.string(),
   extractedFromSurroundingText: z.boolean(),
   removedTrailingCommas: z.boolean(),
+});
+
+const gitAutoCommitOutputSchema = z.object({
+  status: z.enum(["clean", "preview", "committed"]),
+  message: z.string(),
+  repositoryRoot: z.string(),
+  branch: z.string(),
+  gitStatus: z.string(),
+  diff: z.string(),
+  diffTruncated: z.boolean(),
+  commitId: z.string(),
 });
 
 function createServer(): McpServer {
@@ -164,6 +176,56 @@ function createServer(): McpServer {
       } catch (error) {
         return {
           content: [{ type: "text", text: `format_json_payload failed: ${errorMessage(error)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "git_auto_commit",
+    {
+      title: "Preview and create a Git commit",
+      description:
+        "Call first without commitMessage to inspect the repository status and a bounded diff preview. Then generate a Conventional Commit message from those changes and call again with commitMessage to stage all non-ignored repository changes and commit them. This tool modifies Git state; only commit after reviewing the preview.",
+      outputSchema: gitAutoCommitOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      inputSchema: z.object({
+        repositoryPath: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Optional repository directory. Defaults to TOOLBOX_GIT_REPOSITORY or the server's current working directory.",
+          ),
+        commitMessage: z
+          .string()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Omit this for a status and diff preview. After reviewing the preview, provide a single-line Conventional Commit message to create the commit.",
+          ),
+      }),
+    },
+    async (input) => {
+      try {
+        const result = await gitAutoCommit(input);
+        if (result.status === "clean") {
+          return {
+            content: [{ type: "text", text: result.message }],
+            structuredContent: { ...result },
+          };
+        }
+        return jsonResult(result);
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `git_auto_commit failed: ${errorMessage(error)}` }],
           isError: true,
         };
       }
